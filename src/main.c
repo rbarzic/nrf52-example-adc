@@ -37,21 +37,25 @@
 #define PIN_LED 19 // LED1
 #define ADC_RESULT_BUFFER_SIZE 1
 
-static unsigned irq_counter = 0;
+static volatile unsigned irq_counter = 0;
+static volatile unsigned irq_triggered = 0;
 
-#define NRF_SAADC_EVENTS_DONE offsetof(NRF_SAADC_Type, EVENTS_STARTED)
+#define NRF_SAADC_EVENT_DONE offsetof(NRF_SAADC_Type, EVENTS_DONE)
+
+#define  RTC_PRESCALER_VAL 1
 
 void RTC0_IRQHandler(void) {
-    nrf_rtc_event_clear(NRF_RTC0,NRF_RTC_EVENT_TICK);
     irq_counter++;
-    // every 8 IRQs, we toggle the led -> 1Hz rate
-    if(irq_counter %8 == 0) nrf_gpio_pin_toggle(PIN_LED);
+    irq_triggered=1;
+    nrf_rtc_event_clear(NRF_RTC0,NRF_RTC_EVENT_COMPARE_0);
+    nrf_rtc_task_trigger(NRF_RTC0,NRF_RTC_TASK_CLEAR);
+    nrf_gpio_pin_toggle(PIN_LED);
 }
 
 int main(void)
 {
 
-    nrf_saadc_value_t results[ADC_RESULT_BUFFER_SIZE];
+    nrf_saadc_value_t result;;
     nrf_gpio_cfg_output(PIN_LED);
     nrf_gpio_pin_set(PIN_LED); // LED is off
 
@@ -94,44 +98,85 @@ int main(void)
     nrf_clock_task_trigger(NRF_CLOCK_TASK_LFCLKSTART);
 
 
-    // Set prescaler to the max value (12-bit)
-    // -> 8Hz counter frequency
-    nrf_rtc_prescaler_set(NRF_RTC0,(1<<12) -1);
-    nrf_rtc_event_enable(NRF_RTC0, NRF_RTC_INT_TICK_MASK); /* yes INT mask must be used here */
-    nrf_rtc_int_enable(NRF_RTC0,NRF_RTC_INT_TICK_MASK);
+    // One hertz RTC event generation
+
+    nrf_rtc_prescaler_set(NRF_RTC0,RTC_PRESCALER_VAL);
+    nrf_rtc_cc_set(NRF_RTC0,0 /*ch*/, (32768/(1+RTC_PRESCALER_VAL)));
+
+
+    nrf_rtc_event_enable(NRF_RTC0, NRF_RTC_EVENT_COMPARE_0);
+    nrf_rtc_int_enable(NRF_RTC0,NRF_RTC_INT_COMPARE0_MASK);
     nrf_rtc_task_trigger(NRF_RTC0,NRF_RTC_TASK_START);
+
+
+
 
     nrf_saadc_channel_config_t config;
     config.acq_time = NRF_SAADC_ACQTIME_20US;
-    config.gain = NRF_SAADC_GAIN1;
+    config.gain = NRF_SAADC_GAIN1_4;
     config.mode = NRF_SAADC_MODE_SINGLE_ENDED;
     config.pin_p = NRF_SAADC_INPUT_AIN0;
     config.pin_n = NRF_SAADC_INPUT_AIN0; // Single ended -> should be ground to zero
-    config.reference = NRF_SAADC_REFERENCE_INTERNAL;
+    config.reference = NRF_SAADC_REFERENCE_VDD4;
     config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
     config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
 
     nrf_saadc_enable();
     nrf_saadc_channel_init(NRF_SAADC_INPUT_AIN0, &config);
-    nrf_saadc_buffer_init(results,ADC_RESULT_BUFFER_SIZE);
-    nrf_saadc_task_trigger(NRF_SAADC_TASK_START);
-    for (int i=0; i < ADC_RESULT_BUFFER_SIZE;i++) results[i] = 0;
+    nrf_saadc_buffer_init(&result,1); // One sample
 
+    //for (i = 0; i < 1000; i++) {
+    //    result = 0;
+    //    nrf_saadc_task_trigger(NRF_SAADC_TASK_START);
+    //
+    //    while(!nrf_saadc_event_check(NRF_SAADC_EVENT_STARTED));
+    //    nrf_saadc_event_clear(NRF_SAADC_EVENT_STARTED);
+    //
+    //    nrf_saadc_task_trigger(NRF_SAADC_TASK_SAMPLE);
+    //
+    //
+    //    while(!nrf_saadc_event_check(NRF_SAADC_EVENT_END));
+    //    nrf_saadc_event_clear(NRF_SAADC_EVENT_END);
+    //
+    //    nrf_saadc_task_trigger(NRF_SAADC_TASK_STOP);
+    //    while(!nrf_saadc_event_check(NRF_SAADC_EVENT_STOPPED));
+    //    nrf_saadc_event_clear(NRF_SAADC_EVENT_STOPPED);
+    //
+    //    printf("ADC result = 0x%08x\n",result);
+    //    nrf_delay_ms(500);
+    //
+    //}
 
-    //for(int i=0;i<ADC_RESULT_BUFFER_SIZE;i++) {
-        nrf_saadc_task_trigger(NRF_SAADC_TASK_SAMPLE);
-
-        //};
-        printf("One sample !\n");
-        //while(!nrf_saadc_event_check(NRF_SAADC_EVENTS_DONE));
-
-
-    for (int i=0; i < ADC_RESULT_BUFFER_SIZE;i++) {
-        printf("ADC result[%i] = 0x%08x\n",i,(unsigned)results[i]);
-    }
-
-
+    uint32_t local_counter = 0;
+    uint32_t iter = 0;
     while(1) {
+
+        if(irq_triggered==1) { // The UART is also generating
+                               // interrupt so we don't want extra
+                               // conversion
+            irq_triggered=0;
+            iter++;
+            result = 0;
+            nrf_saadc_task_trigger(NRF_SAADC_TASK_START);
+
+            while(!nrf_saadc_event_check(NRF_SAADC_EVENT_STARTED));
+            nrf_saadc_event_clear(NRF_SAADC_EVENT_STARTED);
+
+            nrf_saadc_task_trigger(NRF_SAADC_TASK_SAMPLE);
+
+
+            while(!nrf_saadc_event_check(NRF_SAADC_EVENT_END));
+            nrf_saadc_event_clear(NRF_SAADC_EVENT_END);
+
+            nrf_saadc_task_trigger(NRF_SAADC_TASK_STOP);
+            while(!nrf_saadc_event_check(NRF_SAADC_EVENT_STOPPED));
+            nrf_saadc_event_clear(NRF_SAADC_EVENT_STOPPED);
+
+            printf("%08lu ADC result = 0x%08x (irq=%d)\n",iter,result,irq_counter);
+
+
+        }
+
         __WFI();
     };
 }
