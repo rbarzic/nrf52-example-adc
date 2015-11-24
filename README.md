@@ -1,4 +1,4 @@
-# nrf52-example-rtc
+# nrf52-example-adc
 
 An simple, minimalistic example about using the ADC with an RTC interrupt in a nRF52 device
 
